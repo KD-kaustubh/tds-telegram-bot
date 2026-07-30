@@ -1,0 +1,9 @@
+python-telegram-bot==22.8
+google-genai==1.18.0
+httpx==0.28.1
+flask==3.1.1
+gunicorn==23.0.0
+pandas==2.2.3
+openpyxl==3.1.5
+python-dotenv==1.1.0
+
