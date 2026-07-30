@@ -33,6 +33,7 @@ import pandas as pd
 from flask import Flask, Response, send_from_directory
 from google import genai
 from google.genai import types
+from openai import OpenAI
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -45,7 +46,8 @@ from telegram.ext import (
 # Configuration
 # ---------------------------------------------------------------------------
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-GOOGLE_API_KEY = os.environ["GOOGLE_API_KEY"]
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
+AIPIPE_TOKEN = os.environ.get("AIPIPE_TOKEN", "")
 PORT = int(os.environ.get("PORT", 10000))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", f"http://localhost:{PORT}")
 LOG_DIR = os.environ.get("LOG_DIR", "/tmp/bot_logs")
@@ -61,7 +63,6 @@ log = logging.getLogger("data-analyst-bot")
 # ---------------------------------------------------------------------------
 # Google Gemini client
 # ---------------------------------------------------------------------------
-gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
 MODEL = "gemini-2.5-flash"
 
 # ---------------------------------------------------------------------------
@@ -220,31 +221,53 @@ async def run_agent(question: str, run_id: str) -> str:
         "prompt_length": len(user_message),
     })
 
-    # Step 3: Call Gemini
-    try:
-        response = gemini_client.models.generate_content(
-            model=MODEL,
-            contents=[
-                types.Content(
-                    role="user",
-                    parts=[types.Part(text=user_message)],
+    # Step 3: Call AI
+    raw_answer = None
+    
+    # Try AIPipe first
+    if AIPIPE_TOKEN:
+        try:
+            append_log(run_id, {"step": "calling_llm", "model": "gpt-5-mini (aipipe)"})
+            llm_client = OpenAI(base_url="https://aipipe.org/openai/v1", api_key=AIPIPE_TOKEN)
+            response = llm_client.chat.completions.create(
+                model="gpt-5-mini",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.1
+            )
+            raw_answer = response.choices[0].message.content.strip()
+        except Exception as e:
+            log.warning("AIPipe failed, falling back to Gemini: %s", e)
+            append_log(run_id, {"step": "aipipe_failed", "error": str(e)})
+
+    # Fallback to Gemini
+    if not raw_answer and GOOGLE_API_KEY:
+        try:
+            append_log(run_id, {"step": "calling_llm", "model": MODEL})
+            gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+            response = gemini_client.models.generate_content(
+                model=MODEL,
+                contents=[
+                    types.Content(
+                        role="user",
+                        parts=[types.Part(text=user_message)],
+                    ),
+                ],
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    temperature=0.1,
+                    max_output_tokens=4096,
                 ),
-            ],
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.1,
-                max_output_tokens=4096,
-            ),
-        )
-        raw_answer = response.text.strip()
-    except Exception as e:
-        log.error("Gemini API error: %s", e)
-        append_log(run_id, {
-            "step": "llm_error",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "error": str(e),
-        })
-        raw_answer = '{"error": "LLM call failed"}'
+            )
+            raw_answer = response.text.strip()
+        except Exception as e:
+            log.error("Gemini API error: %s", e)
+            append_log(run_id, {"step": "gemini_failed", "error": str(e)})
+
+    if not raw_answer:
+        raw_answer = '{"error": "Both AIPipe and Gemini calls failed"}'
 
     append_log(run_id, {
         "step": "llm_response",
