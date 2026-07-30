@@ -323,15 +323,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Parse the answer to embed in the response object
         try:
             answer_obj = json.loads(answer_json)
+            
+            # If the LLM already formatted the full response with 'answer' and 'log_url'
+            if isinstance(answer_obj, dict) and "answer" in answer_obj:
+                response = answer_obj
+                response["log_url"] = log_url
+            else:
+                # If the LLM just gave the inner answer object
+                response = {
+                    "answer": answer_obj,
+                    "log_url": log_url,
+                }
         except json.JSONDecodeError:
-            # If it's not valid JSON, wrap it
-            answer_obj = answer_json
+            # If it's not valid JSON, wrap it as a string
+            response = {
+                "answer": answer_json,
+                "log_url": log_url,
+            }
 
-        # Build the final response
-        response = {
-            "answer": answer_obj,
-            "log_url": log_url,
-        }
         response_text = json.dumps(response, ensure_ascii=False)
 
         append_log(run_id, {
